@@ -129,16 +129,29 @@ function App() {
       // ===============================
       // CONVERT BASE64 TO AUDIO BLOB
       // ===============================
-      const binaryString = window.atob(data.audioBase64);
+   let base64 = data.audioBase64;
 
-      const len = binaryString.length;
+// Clean and normalize Base64
+base64 = base64
+  .replace(/^data:audio\/[^;]+;base64,/, "")
+  .replace(/\s/g, "")
+  .replace(/-/g, "+")
+  .replace(/_/g, "/");
 
-      const bytes = new Uint8Array(len);
+// Add missing Base64 padding
+while (base64.length % 4 !== 0) {
+  base64 += "=";
+}
 
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
+const binaryString = window.atob(base64);
 
+const len = binaryString.length;
+
+const bytes = new Uint8Array(len);
+
+for (let i = 0; i < len; i++) {
+  bytes[i] = binaryString.charCodeAt(i);
+}
       const audioBlob = new Blob([bytes], {
         type: data.mimeType || "audio/mpeg",
       });
