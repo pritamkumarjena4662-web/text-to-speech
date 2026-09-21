@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
@@ -10,13 +10,23 @@ function App() {
   const [language, setLanguage] = useState("en-US");
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState("");
+
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  const [audioUrl, setAudioUrl] = useState("");
+  const [audioFileName, setAudioFileName] = useState("speech.mp3");
+
+  const audioRef = useRef(null);
+
   const maxCharacters = 500;
 
+  // ===============================
+  // LOAD BROWSER VOICES
+  // ===============================
   const loadVoices = () => {
     const availableVoices = window.speechSynthesis.getVoices();
 
@@ -40,9 +50,16 @@ function App() {
 
     return () => {
       window.speechSynthesis.cancel();
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     };
   }, []);
 
+  // ===============================
+  // UPDATE VOICE WHEN LANGUAGE CHANGES
+  // ===============================
   useEffect(() => {
     const filtered = voices.filter(
       (voice) => voice.lang === language
@@ -59,11 +76,16 @@ function App() {
     (voice) => voice.lang === language
   );
 
+  // ===============================
+  // WORD COUNT
+  // ===============================
   const wordCount = text.trim()
     ? text.trim().split(/\s+/).length
     : 0;
 
-  // Generate speech
+  // ===============================
+  // GENERATE SPEECH
+  // ===============================
   const handleGenerateSpeech = async () => {
     setError("");
     setSuccess("");
@@ -81,6 +103,14 @@ function App() {
     setIsGenerating(true);
 
     try {
+      // Stop existing audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+
+      setIsSpeaking(false);
+
       // Send request to backend
       const response = await axios.post(`${API_URL}/tts`, {
         text: text,
@@ -88,44 +118,71 @@ function App() {
         voice: selectedVoice,
       });
 
-      if (response.data.success) {
-        setSuccess("Speech generated successfully!");
-
-        // Stop previous speech
-        window.speechSynthesis.cancel();
-
-        // Browser Text-to-Speech
-        const speech = new SpeechSynthesisUtterance(text);
-
-        speech.lang = language;
-
-        const selected = voices.find(
-          (voice) => voice.name === selectedVoice
+      if (!response.data.success) {
+        throw new Error(
+          response.data.message || "Speech generation failed."
         );
-
-        if (selected) {
-          speech.voice = selected;
-        }
-
-        speech.rate = 1;
-        speech.pitch = 1;
-        speech.volume = 1;
-
-        speech.onstart = () => {
-          setIsSpeaking(true);
-        };
-
-        speech.onend = () => {
-          setIsSpeaking(false);
-        };
-
-        speech.onerror = () => {
-          setIsSpeaking(false);
-          setError("Unable to play generated speech.");
-        };
-
-        window.speechSynthesis.speak(speech);
       }
+
+      const data = response.data.data;
+
+      // ===============================
+      // CONVERT BASE64 TO AUDIO BLOB
+      // ===============================
+      const binaryString = window.atob(data.audioBase64);
+
+      const len = binaryString.length;
+
+      const bytes = new Uint8Array(len);
+
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const audioBlob = new Blob([bytes], {
+        type: data.mimeType || "audio/mpeg",
+      });
+
+      // Create browser URL
+      const url = URL.createObjectURL(audioBlob);
+
+      // Remove previous URL
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+
+      setAudioUrl(url);
+      setAudioFileName(data.fileName || "speech.mp3");
+
+      setSuccess("Speech generated successfully!");
+
+      // ===============================
+      // CREATE AUDIO PLAYER
+      // ===============================
+      const audio = new Audio(url);
+
+      audioRef.current = audio;
+
+      audio.onplay = () => {
+        setIsSpeaking(true);
+      };
+
+      audio.onended = () => {
+        setIsSpeaking(false);
+      };
+
+      audio.onpause = () => {
+        setIsSpeaking(false);
+      };
+
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        setError("Unable to play generated audio.");
+      };
+
+      // Automatically play generated audio
+      await audio.play();
+
     } catch (err) {
       console.error("Backend Error:", err);
 
@@ -134,6 +191,8 @@ function App() {
           err.response.data?.message ||
             "Backend rejected the request."
         );
+      } else if (err.message) {
+        setError(err.message);
       } else {
         setError(
           "Cannot connect to backend. Make sure server is running on port 5000."
@@ -144,43 +203,125 @@ function App() {
     }
   };
 
-  // Stop speech
+  // ===============================
+  // STOP AUDIO
+  // ===============================
   const handleStop = () => {
-    window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+
     setIsSpeaking(false);
   };
 
-  // Clear everything
+  // ===============================
+  // PLAY AUDIO
+  // ===============================
+  const handlePlay = async () => {
+    if (!audioRef.current && audioUrl) {
+      const audio = new Audio(audioUrl);
+
+      audioRef.current = audio;
+
+      audio.onplay = () => {
+        setIsSpeaking(true);
+      };
+
+      audio.onended = () => {
+        setIsSpeaking(false);
+      };
+
+      audio.onpause = () => {
+        setIsSpeaking(false);
+      };
+    }
+
+    if (audioRef.current) {
+      try {
+        await audioRef.current.play();
+      } catch (err) {
+        console.error("Audio Play Error:", err);
+        setError("Unable to play audio.");
+      }
+    }
+  };
+
+  // ===============================
+  // DOWNLOAD AUDIO
+  // ===============================
+  const handleDownload = () => {
+    if (!audioUrl) {
+      setError("Please generate speech first.");
+      return;
+    }
+
+    const link = document.createElement("a");
+
+    link.href = audioUrl;
+    link.download = audioFileName || "speech.mp3";
+
+    document.body.appendChild(link);
+
+    link.click();
+
+    document.body.removeChild(link);
+
+    setSuccess("Audio downloaded successfully!");
+  };
+
+  // ===============================
+  // CLEAR EVERYTHING
+  // ===============================
   const handleClear = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+
     window.speechSynthesis.cancel();
+
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
 
     setText("");
     setIsSpeaking(false);
+    setIsGenerating(false);
+
+    setAudioUrl("");
+    setAudioFileName("speech.mp3");
+
     setError("");
     setSuccess("");
   };
 
-  // Download placeholder
-  const handleDownload = () => {
-    setError(
-      "Audio download will be enabled after connecting a cloud TTS provider."
-    );
-  };
-
   return (
     <div className="app">
+
+      {/* ===============================
+          NAVBAR
+      =============================== */}
       <header className="navbar">
+
         <div className="logo">
           <span className="logo-icon">🔊</span>
           <span>VoiceText</span>
         </div>
 
-        <span className="badge">Text-to-Speech</span>
+        <span className="badge">
+          Text-to-Speech
+        </span>
+
       </header>
 
       <main className="container">
 
+        {/* ===============================
+            HERO
+        =============================== */}
         <section className="hero">
+
           <p className="small-title">
             SMART SPEECH GENERATOR
           </p>
@@ -193,13 +334,20 @@ function App() {
             Enter your text, choose a language and voice,
             then generate natural-sounding speech instantly.
           </p>
+
         </section>
 
+        {/* ===============================
+            TEXT CARD
+        =============================== */}
         <section className="card">
 
           <div className="card-header">
+
             <div>
-              <h2>Text to Speech</h2>
+              <h2>
+                Text to Speech
+              </h2>
 
               <p>
                 Enter the text you want to convert into audio.
@@ -207,6 +355,7 @@ function App() {
             </div>
 
             <div className="status">
+
               <span className="status-dot"></span>
 
               {isGenerating
@@ -214,40 +363,55 @@ function App() {
                 : isSpeaking
                 ? "Speaking"
                 : "Ready"}
+
             </div>
+
           </div>
 
+          {/* TEXTAREA */}
           <div className="textarea-wrapper">
 
             <textarea
               value={text}
               onChange={(e) => {
-                if (
-                  e.target.value.length <=
-                  maxCharacters
-                ) {
+
+                if (e.target.value.length <= maxCharacters) {
+
                   setText(e.target.value);
+
                   setError("");
                   setSuccess("");
+
                 }
+
               }}
               placeholder="Type or paste your text here..."
               maxLength={maxCharacters}
             />
 
             <div className="text-info">
-              <span>{wordCount} words</span>
+
+              <span>
+                {wordCount} words
+              </span>
 
               <span>
                 {text.length}/{maxCharacters} characters
               </span>
+
             </div>
+
           </div>
 
+          {/* SETTINGS */}
           <div className="settings">
 
+            {/* LANGUAGE */}
             <div className="field">
-              <label>Language</label>
+
+              <label>
+                Language
+              </label>
 
               <select
                 value={language}
@@ -255,6 +419,7 @@ function App() {
                   setLanguage(e.target.value)
                 }
               >
+
                 <option value="en-US">
                   🇺🇸 English
                 </option>
@@ -282,11 +447,17 @@ function App() {
                 <option value="de-DE">
                   🇩🇪 German
                 </option>
+
               </select>
+
             </div>
 
+            {/* VOICE */}
             <div className="field">
-              <label>Voice</label>
+
+              <label>
+                Voice
+              </label>
 
               <select
                 value={selectedVoice}
@@ -294,36 +465,49 @@ function App() {
                   setSelectedVoice(e.target.value)
                 }
               >
+
                 {filteredVoices.length > 0 ? (
+
                   filteredVoices.map((voice) => (
+
                     <option
-                      key={voice.name}
+                      key={`${voice.name}-${voice.lang}`}
                       value={voice.name}
                     >
                       {voice.name}
                     </option>
+
                   ))
+
                 ) : (
+
                   <option value="">
                     Default Voice
                   </option>
+
                 )}
+
               </select>
+
             </div>
+
           </div>
 
+          {/* SUCCESS */}
           {success && (
             <div className="success-message">
               ✅ {success}
             </div>
           )}
 
+          {/* ERROR */}
           {error && (
             <div className="error-message">
               ⚠️ {error}
             </div>
           )}
 
+          {/* ACTION BUTTONS */}
           <div className="actions">
 
             <button
@@ -331,11 +515,13 @@ function App() {
               onClick={handleGenerateSpeech}
               disabled={isGenerating}
             >
+
               {isGenerating
                 ? "⏳ Generating..."
                 : isSpeaking
                 ? "🔊 Speaking..."
                 : "▶ Generate Speech"}
+
             </button>
 
             <button
@@ -354,18 +540,26 @@ function App() {
             </button>
 
           </div>
+
         </section>
 
+        {/* ===============================
+            AUDIO CARD
+        =============================== */}
         <section className="audio-card">
 
           <div className="audio-header">
 
             <div>
-              <h2>Generated Audio</h2>
+
+              <h2>
+                Generated Audio
+              </h2>
 
               <p>
                 Your generated speech will appear here.
               </p>
+
             </div>
 
             <div
@@ -375,15 +569,20 @@ function App() {
                   : "playing"
               }
             >
+
               <span></span>
 
               {isSpeaking
                 ? "Playing"
-                : "Ready"}
+                : audioUrl
+                ? "Ready"
+                : "Waiting"}
+
             </div>
 
           </div>
 
+          {/* AUDIO PLAYER */}
           <div className="audio-player">
 
             <div className="audio-icon">
@@ -396,38 +595,93 @@ function App() {
                 Text-to-Speech Audio
               </strong>
 
-              <div className="wave">
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-                <i></i>
-              </div>
+              {audioUrl ? (
+
+                <audio
+                  controls
+                  src={audioUrl}
+                  onPlay={() => setIsSpeaking(true)}
+                  onPause={() => setIsSpeaking(false)}
+                  onEnded={() => setIsSpeaking(false)}
+                  style={{
+                    width: "100%",
+                    marginTop: "12px"
+                  }}
+                >
+                  Your browser does not support audio playback.
+                </audio>
+
+              ) : (
+
+                <div className="wave">
+
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                  <i></i>
+
+                </div>
+
+              )}
 
             </div>
 
           </div>
 
+          {/* AUDIO CONTROLS */}
+          {audioUrl && (
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                marginTop: "15px"
+              }}
+            >
+
+              <button
+                className="generate-btn"
+                onClick={handlePlay}
+              >
+                ▶ Play Audio
+              </button>
+
+              <button
+                className="stop-btn"
+                onClick={handleStop}
+              >
+                ■ Stop
+              </button>
+
+            </div>
+          )}
+
+          {/* DOWNLOAD */}
           <button
             className="download-btn"
             onClick={handleDownload}
+            disabled={!audioUrl}
           >
             ⬇ Download Audio
           </button>
 
         </section>
 
+        {/* ===============================
+            FEATURES
+        =============================== */}
         <section className="features">
 
           <div>
+
             <span>🌍</span>
 
             <h3>
@@ -438,9 +692,11 @@ function App() {
               Choose from different supported
               languages.
             </p>
+
           </div>
 
           <div>
+
             <span>🎙️</span>
 
             <h3>
@@ -451,9 +707,11 @@ function App() {
               Select from available voices
               on your device.
             </p>
+
           </div>
 
           <div>
+
             <span>⚡</span>
 
             <h3>
@@ -464,17 +722,24 @@ function App() {
               Convert your text into speech
               quickly.
             </p>
+
           </div>
 
         </section>
 
       </main>
 
+      {/* ===============================
+          FOOTER
+      =============================== */}
       <footer>
+
         <p>
           © 2026 VoiceText • Text-to-Speech Application
         </p>
+
       </footer>
+
     </div>
   );
 }
